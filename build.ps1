@@ -16,7 +16,8 @@ $sources = @(Get-ChildItem src -Recurse -Filter *.java | ForEach-Object FullName
 & "$jdk/bin/javac.exe" --release 8 -encoding UTF-8 -classpath $platform -d build/classes @sources
 & "$jdk/bin/jar.exe" cf build/classes.jar -C build/classes .
 & "$tools/d8.bat" --min-api 27 --lib $platform --output build/dex build/classes.jar
-& "$tools/aapt2.exe" link --min-sdk-version 27 --target-sdk-version 34 -I $platform --manifest AndroidManifest.xml -o build/base.apk
+& "$tools/aapt2.exe" compile --dir app/src/main/res -o build/resources.zip
+& "$tools/aapt2.exe" link build/resources.zip --min-sdk-version 27 --target-sdk-version 34 -I $platform --manifest AndroidManifest.xml -o build/base.apk
 Copy-Item build/base.apk build/unsigned.apk -Force
 & "$jdk/bin/jar.exe" uf build/unsigned.apk -C build/dex classes.dex
 & "$tools/zipalign.exe" -f 4 build/unsigned.apk build/aligned.apk

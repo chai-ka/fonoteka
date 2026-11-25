@@ -132,7 +132,21 @@ public final class MainActivity extends Activity {
         content.addView(playerBar);
         setContentView(content);
         refresh();
-        receive(getIntent());
+        if (state == null) receive(getIntent());
+        else {
+            ArrayList<Uri> restored = state.getParcelableArrayList("pendingImport");
+            if (restored != null) pending = restored;
+        }
+    }
+
+    @Override protected void onSaveInstanceState(Bundle state) {
+        super.onSaveInstanceState(state);
+        state.putParcelableArrayList("pendingImport", pending);
+    }
+
+    @Override protected void onDestroy() {
+        worker.shutdown();
+        super.onDestroy();
     }
 
     @Override protected void onNewIntent(Intent intent) {
@@ -141,13 +155,21 @@ public final class MainActivity extends Activity {
     }
 
     private void receive(Intent intent) {
-        if (Intent.ACTION_SEND.equals(intent.getAction())) {
-            Uri uri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
-            if (uri != null) accept(new ArrayList<>(Collections.singletonList(uri)));
-        } else if (Intent.ACTION_SEND_MULTIPLE.equals(intent.getAction())) {
-            ArrayList<Uri> files = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
-            if (files != null) accept(files);
+        String action = intent.getAction();
+        if (!Intent.ACTION_SEND.equals(action) && !Intent.ACTION_SEND_MULTIPLE.equals(action)) return;
+        Bundle extras = intent.getExtras();
+        if (extras == null) return;
+        Object stream = extras.get(Intent.EXTRA_STREAM);
+        List<?> items = Intent.ACTION_SEND_MULTIPLE.equals(action) && stream instanceof List
+            ? (List<?>) stream : Collections.singletonList(stream);
+        ArrayList<Uri> files = new ArrayList<>();
+        for (Object item : items) {
+            if (item instanceof Uri && ContentResolver.SCHEME_CONTENT.equals(((Uri) item).getScheme())) {
+                files.add((Uri) item);
+            }
         }
+        if (files.isEmpty()) message("Выберите аудиофайлы через системное меню");
+        else accept(files);
     }
 
     private void chooseSource() {
@@ -318,7 +340,10 @@ public final class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int request, int result, Intent intent) {
         super.onActivityResult(request, result, intent);
-        if (result != RESULT_OK || intent == null) return;
+        if (result != RESULT_OK || intent == null) {
+            if (request == FOLDER) pending.clear();
+            return;
+        }
         if (request == FOLDER) {
             try {
                 Uri chosen = intent.getData();
@@ -437,18 +462,14 @@ public final class MainActivity extends Activity {
     private Button exportButton, toggle;
     private TextView nowPlaying;
     private LinearLayout playerBar;
-    private final BroadcastReceiver playbackChanges = new BroadcastReceiver() {
-        @Override public void onReceive(Context context, Intent intent) { updatePlayer(); }
-    };
+    private final Runnable playbackChanges = this::updatePlayer;
     @Override protected void onStart() {
         super.onStart();
-        IntentFilter filter = new IntentFilter(Playback.CHANGED);
-        if (android.os.Build.VERSION.SDK_INT >= 33) registerReceiver(playbackChanges, filter, Context.RECEIVER_NOT_EXPORTED);
-        else registerReceiver(playbackChanges, filter);
+        Playback.listeners.add(playbackChanges);
         updatePlayer();
     }
     @Override protected void onStop() {
-        unregisterReceiver(playbackChanges);
+        Playback.listeners.remove(playbackChanges);
         super.onStop();
     }
     private void updatePlayer() {

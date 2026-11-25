@@ -9,7 +9,8 @@ import android.os.IBinder;
 import java.util.ArrayList;
 
 public final class Playback extends Service {
-    static final String CHANGED = "local.fonoteka.PLAYBACK_CHANGED";
+    // Activity lifecycle and service callbacks run on the main thread.
+    static final java.util.Set<Runnable> listeners = new java.util.LinkedHashSet<>();
     static String currentTitle;
     static boolean playing;
     private MediaPlayer player;
@@ -36,7 +37,7 @@ public final class Playback extends Service {
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int id) {
-        if (intent == null) return START_NOT_STICKY;
+        if (intent == null || intent.getAction() == null) return START_NOT_STICKY;
         switch (intent.getAction()) {
             case "play":
                 uris = intent.getStringArrayListExtra("uris");
@@ -103,7 +104,7 @@ public final class Playback extends Service {
     private void update(int state) {
         playing = state == PlaybackState.STATE_PLAYING;
         currentTitle = titles.get(index);
-        sendBroadcast(new Intent(CHANGED).setPackage(getPackageName()));
+        for (Runnable listener : listeners) listener.run();
         session.setPlaybackState(new PlaybackState.Builder().setActions(PlaybackState.ACTION_PLAY_PAUSE
             | PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE | PlaybackState.ACTION_SKIP_TO_NEXT
             | PlaybackState.ACTION_SKIP_TO_PREVIOUS | PlaybackState.ACTION_STOP | PlaybackState.ACTION_SEEK_TO)
@@ -124,7 +125,7 @@ public final class Playback extends Service {
         session.release();
         currentTitle = null;
         playing = false;
-        sendBroadcast(new Intent(CHANGED).setPackage(getPackageName()));
+        for (Runnable listener : listeners) listener.run();
         super.onDestroy();
     }
 
