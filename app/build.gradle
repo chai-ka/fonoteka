@@ -1,0 +1,25 @@
+plugins {
+    id 'com.android.application' version '9.4.0'
+}
+
+android {
+    namespace 'local.fonoteka'
+    compileSdk {
+        version = release(36) { minorApiLevel = 1 }
+    }
+    defaultConfig {
+        applicationId 'local.fonoteka'
+        minSdk 27
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+    if (rootProject.file('build/debug.keystore').exists()) {
+        signingConfigs.debug.storeFile = rootProject.file('build/debug.keystore')
+    }
+    sourceSets.main {
+        manifest.srcFile '../AndroidManifest.xml'
+        java.srcDirs = ['../src']
+    }
+}
+
