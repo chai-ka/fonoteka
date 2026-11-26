@@ -1,6 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="local.fonoteka">
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application android:icon="@drawable/record" android:dataExtractionRules="@xml/backup_rules" android:label="Фонотека" android:theme="@android:style/Theme.Material.NoActionBar" android:fullBackupContent="false" android:allowBackup="false">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>

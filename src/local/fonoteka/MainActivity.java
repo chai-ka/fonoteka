@@ -114,6 +114,8 @@ public final class MainActivity extends Activity {
         rows = column();
         scroll.addView(rows);
         content.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        normalizeButton = button("Нормализовать", this::normalizeSelected);
+        content.addView(normalizeButton);
         exportButton = button("Экспорт выбранных в ZIP", this::chooseExport);
         content.addView(exportButton);
         playerBar = new LinearLayout(this);
@@ -276,7 +278,7 @@ public final class MainActivity extends Activity {
         return new String(output.toByteArray(), StandardCharsets.UTF_8);
     }
 
-    private static void copy(InputStream input, OutputStream output) throws IOException {
+    static void copy(InputStream input, OutputStream output) throws IOException {
         byte[] buffer = new byte[65536];
         int count;
         while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
@@ -390,7 +392,16 @@ public final class MainActivity extends Activity {
             cover.setBackground(shape(CORAL, 8));
             cover.setClipToOutline(true);
             cover.setOnClickListener(v -> play(visible, track));
-            row.addView(cover, new LinearLayout.LayoutParams(dp(44), dp(44)));
+            View artwork = cover;
+            File thumb = thumbnail(track.uri);
+            if (thumb.isFile()) {
+                ImageView image = new ImageView(this);
+                image.setImageURI(Uri.fromFile(thumb));
+                image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                image.setOnClickListener(v -> play(visible, track));
+                artwork = image;
+            }
+            row.addView(artwork, new LinearLayout.LayoutParams(dp(44), dp(44)));
             LinearLayout info = column();
             info.setPadding(dp(8), dp(10), dp(8), dp(10));
             info.addView(label(track.title, 18));
@@ -405,6 +416,9 @@ public final class MainActivity extends Activity {
                 if (checked) selected.add(track); else selected.remove(track);
                 selectionChanged();
             });
+            Button tags = button("⋯", () -> edit(track));
+            tags.setContentDescription("Теги и распознавание: " + track.title);
+            row.addView(tags);
             row.addView(check);
             rows.addView(row);
         }
@@ -416,15 +430,235 @@ public final class MainActivity extends Activity {
         EditText title = field(form, "Название", track.title);
         EditText artist = field(form, "Исполнитель", track.artist);
         EditText album = field(form, "Альбом", track.album);
-        new AlertDialog.Builder(this).setTitle("Теги в фонотеке").setView(form)
+        boolean flac = track.mime.toLowerCase(Locale.ROOT).contains("flac") || track.uri.toLowerCase(Locale.ROOT).endsWith(".flac");
+        final AlertDialog[] editor = new AlertDialog[1];
+        if (flac) {
+            form.addView(button("Найти по названию", () -> {
+                String query = title.getText().toString().trim();
+                String performer = artist.getText().toString().trim();
+                if (query.isEmpty()) { message("Введите название для поиска"); return; }
+                editor[0].dismiss();
+                background("Поиск в каталогах…", () -> Match.search(query, performer), results -> {
+                    if (results.isEmpty()) { message("Совпадений нет. Уточните название."); return; }
+                    String[] labels = new String[results.size()];
+                    for (int i=0; i<labels.length; i++) labels[i] = results.get(i).label();
+                    new AlertDialog.Builder(this).setTitle("Выберите издание").setItems(labels,
+                        (d, i) -> preview(track, results.get(i))).setNegativeButton("Отмена", null).show();
+                });
+            }));
+            form.addView(button("Распознать по звуку", () -> { editor[0].dismiss(); recognize(track); }));
+        }
+        editor[0] = new AlertDialog.Builder(this).setTitle(flac ? "Нормализация FLAC" : "Теги в фонотеке").setView(form)
             .setNegativeButton("Отмена", null).setPositiveButton("Сохранить", (dialog, which) -> {
                 String name = title.getText().toString().trim();
-                if (!name.isEmpty()) track.title = name;
+                if (name.isEmpty()) { message("Введите название"); return; }
+                if (flac) {
+                    preview(track, new Match(name, artist.getText().toString().trim(), album.getText().toString().trim(), ""));
+                    return;
+                }
+                track.title = name;
                 track.artist = artist.getText().toString().trim();
                 track.album = album.getText().toString().trim();
                 save();
                 refresh();
             }).show();
+    }
+
+    private interface Result<T> { void accept(T result); }
+    private <T> void background(String progress, java.util.concurrent.Callable<T> task, Result<T> success) {
+        if (busy) { message("Дождитесь завершения операции"); return; }
+        busy = true;
+        status.setText(progress);
+        worker.execute(() -> {
+            try {
+                T result = task.call();
+                runOnUiThread(() -> {
+                    busy = false;
+                    if (isDestroyed() || isFinishing()) return;
+                    refresh();
+                    success.accept(result);
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    busy = false;
+                    if (isDestroyed() || isFinishing()) return;
+                    refresh();
+                    message("Не удалось завершить: " + error.getLocalizedMessage());
+                });
+            }
+        });
+    }
+
+    private void recognize(Track track) {
+        EditText key = new EditText(this);
+        key.setSingleLine();
+        key.setHint("API-ключ AudD");
+        key.setInputType(129);
+        new AlertDialog.Builder(this).setTitle("Распознавание AudD")
+            .setMessage("Отправить до 10 секунд звука в AudD? Потребуется ваш ключ сервиса.")
+            .setView(key).setNegativeButton("Отмена", null).setPositiveButton("Распознать", (d, w) -> {
+                String token = key.getText().toString().trim();
+                if (token.isEmpty()) { message("Введите ключ AudD или выберите поиск по названию"); return; }
+                background("Распознавание…", () -> Match.recognize(token,
+                    AudioSample.wav(this, Uri.parse(track.uri))), match -> preview(track, match));
+            }).show();
+    }
+
+    private void preview(Track track, Match match) {
+        background("Подготовка сравнения…", () -> loadCover(match), cover -> {
+            LinearLayout details = column();
+            details.setPadding(dp(20), dp(8), dp(20), dp(8));
+            details.addView(label("Было", 14));
+            details.addView(label(track.label() + "\n" + track.album, 17));
+            details.addView(label("Стало", 14));
+            details.addView(label(match.label(), 17));
+            if (cover != null) {
+                ImageView art = new ImageView(this);
+                art.setImageBitmap(cover);
+                art.setContentDescription("Обложка выбранного издания");
+                details.addView(art, new LinearLayout.LayoutParams(-1, dp(120)));
+            } else details.addView(label("Текущая обложка будет сохранена", 14));
+            ScrollView scroll = new ScrollView(this);
+            scroll.addView(details);
+            new AlertDialog.Builder(this).setTitle("Изменения в файле FLAC").setView(scroll)
+                .setNegativeButton("Отмена", null).setPositiveButton("Записать", (d, w) -> applyMatch(track, match, cover)).show();
+        });
+    }
+
+    private Bitmap loadCover(Match match) {
+            if (match.cover.isEmpty()) return (Bitmap)null;
+            try {
+                byte[] data = Match.get(match.cover);
+                BitmapFactory.Options bounds = new BitmapFactory.Options();
+                bounds.inJustDecodeBounds = true;
+                BitmapFactory.decodeByteArray(data, 0, data.length, bounds);
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0 || bounds.outWidth > 2048 || bounds.outHeight > 2048) return null;
+                return BitmapFactory.decodeByteArray(data, 0, data.length);
+            } catch (IOException unavailable) { return null; }
+    }
+
+    private File thumbnail(String uri) {
+        return new File(getFilesDir(), UUID.nameUUIDFromBytes(uri.getBytes(StandardCharsets.UTF_8)) + ".jpg");
+    }
+
+    private void applyMatch(Track track, Match match, Bitmap cover) {
+        Uri old = Uri.parse(track.uri);
+        background("Запись тегов…", () -> writeMatch(track, match, cover), dest -> {
+            if (commitMatch(track, match, old, dest)) message("Теги записаны");
+            refresh();
+        });
+    }
+
+    private Uri writeMatch(Track track, Match match, Bitmap cover) throws Exception {
+        Uri old = Uri.parse(track.uri);
+            Uri root = DocumentsContract.buildDocumentUriUsingTree(library, DocumentsContract.getTreeDocumentId(library));
+            Uri artist = directory(root, safe(match.artist.isEmpty() ? "Неизвестный исполнитель" : match.artist));
+            Uri album = directory(artist, safe(match.album.isEmpty() ? "Без альбома" : match.album));
+            byte[] image = null;
+            if (cover != null) {
+                ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                if (!cover.compress(Bitmap.CompressFormat.JPEG, 92, bytes)) throw new IOException("Ошибка записи обложки");
+                image = bytes.toByteArray();
+            }
+            boolean mp3 = isMp3(track);
+            Uri dest = DocumentsContract.createDocument(getContentResolver(), album, mp3 ? "audio/mpeg" : "audio/flac", safe(match.title) + (mp3 ? ".mp3" : ".flac"));
+            if (dest == null || dest.equals(old)) throw new IOException("Не удалось создать отдельный файл");
+            try (InputStream in = getContentResolver().openInputStream(old);
+                 OutputStream out = getContentResolver().openOutputStream(dest)) {
+                if (in == null || out == null) throw new IOException("Файл недоступен");
+                if (mp3) Mp3Tags.write(getCacheDir(), in, out, match, image);
+                else FlacTags.write(in, out, match.title, match.artist, match.album, image,
+                    cover == null ? 0 : cover.getWidth(), cover == null ? 0 : cover.getHeight());
+            } catch (Exception error) {
+                DocumentsContract.deleteDocument(getContentResolver(), dest);
+                throw error;
+            }
+            if (image != null) {
+                try (FileOutputStream out = new FileOutputStream(thumbnail(dest.toString()))) { out.write(image); }
+                catch (IOException ignored) { /* Artwork remains embedded in the FLAC. */ }
+            } else if (thumbnail(old.toString()).isFile()) {
+                try (FileInputStream src = new FileInputStream(thumbnail(old.toString()));
+                     FileOutputStream dst = new FileOutputStream(thumbnail(dest.toString()))) { copy(src, dst); }
+                catch (IOException ignored) {}
+            }
+            return dest;
+    }
+
+    private boolean commitMatch(Track track, Match match, Uri old, Uri dest) {
+
+            String oldTitle = track.title, oldArtist = track.artist, oldAlbum = track.album;
+            track.uri = dest.toString();
+            track.title = match.title;
+            track.artist = match.artist;
+            track.album = match.album;
+            if (!save()) {
+                track.uri = old.toString();
+                track.title = oldTitle; track.artist = oldArtist; track.album = oldAlbum;
+                try { DocumentsContract.deleteDocument(getContentResolver(), dest); } catch (Exception ignored) {}
+                return false;
+            } else {
+                try {
+                    DocumentsContract.deleteDocument(getContentResolver(), old);
+                } catch (Exception ignored) { message("В папке также осталась предыдущая копия"); }
+                return true;
+            }
+    }
+
+    private boolean isMp3(Track track) {
+        return "audio/mpeg".equalsIgnoreCase(track.mime) || track.uri.toLowerCase(Locale.ROOT).endsWith(".mp3");
+    }
+
+    private void normalizeSelected() {
+        if (busy || selected.isEmpty()) return;
+        busy = true;
+        selectionChanged();
+        ArrayList<Track> queue = new ArrayList<>(selected);
+        normalizeNext(queue, 0, new ArrayList<>(), 0);
+    }
+
+    private void normalizeNext(ArrayList<Track> queue, int index, ArrayList<String> details, int done) {
+        if (index == queue.size()) {
+            busy = false;
+            refresh();
+            String summary = "Обработано " + done + " из " + queue.size();
+            if (details.isEmpty()) message(summary);
+            else new AlertDialog.Builder(this).setTitle(summary).setMessage(android.text.TextUtils.join("\n", details))
+                .setPositiveButton("Закрыть", null).show();
+            return;
+        }
+        Track track = queue.get(index);
+        Uri old = Uri.parse(track.uri);
+        status.setText("Нормализация " + (index+1) + " / " + queue.size());
+        worker.execute(() -> {
+            try {
+                if (!isMp3(track) && !track.mime.toLowerCase(Locale.ROOT).contains("flac")
+                    && !track.uri.toLowerCase(Locale.ROOT).endsWith(".flac"))
+                    throw new IOException("поддерживаются MP3 и FLAC");
+                Match match = Match.identify(AudioSample.wav(this, old));
+                if (match == null) throw new IOException("запись не распознана");
+                Bitmap cover = loadCover(match);
+                Match resolved = match.album.isEmpty() ? new Match(match.title,match.artist,track.album,match.cover) : match;
+                Uri dest = writeMatch(track, resolved, cover);
+                runOnUiThread(() -> {
+                    if (isDestroyed() || isFinishing()) {
+                        try { DocumentsContract.deleteDocument(getContentResolver(), dest); } catch (Exception ignored) {}
+                        return;
+                    }
+                    boolean saved = commitMatch(track,resolved,old,dest);
+                    if (saved) selected.remove(track);
+                    if (!saved) details.add(track.title + " — ошибка сохранения");
+                    else if (cover == null) details.add(track.title + " — обложка недоступна");
+                    refresh();
+                    normalizeNext(queue,index+1,details,done+(saved?1:0));
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    if (isDestroyed() || isFinishing()) return;
+                    details.add(track.title + " — " + error.getLocalizedMessage());
+                    normalizeNext(queue,index+1,details,done);
+                });
+            }
+        });
     }
 
     private EditText field(LinearLayout parent, String hint, String text) {
@@ -436,7 +670,7 @@ public final class MainActivity extends Activity {
         return input;
     }
 
-    private void save() {
+    private boolean save() {
         JSONArray data = new JSONArray();
         for (Track track : tracks) data.put(new JSONArray(Arrays.asList(track.uri, track.title, track.artist, track.album, track.mime)));
         android.util.AtomicFile file = new android.util.AtomicFile(new File(getFilesDir(), "tracks.json"));
@@ -445,9 +679,11 @@ public final class MainActivity extends Activity {
             output = file.startWrite();
             output.write(data.toString().getBytes(StandardCharsets.UTF_8));
             file.finishWrite(output);
+            return true;
         } catch (IOException error) {
             if (output != null) file.failWrite(output);
             message("Не удалось сохранить каталог");
+            return false;
         }
     }
 
@@ -459,7 +695,7 @@ public final class MainActivity extends Activity {
     }
 
     private static final int INK = 0xff191918, PANEL = 0xff30302e, CORAL = 0xfff29b78;
-    private Button exportButton, toggle;
+    private Button exportButton, normalizeButton, toggle;
     private TextView nowPlaying;
     private LinearLayout playerBar;
     private final Runnable playbackChanges = this::updatePlayer;
@@ -480,6 +716,8 @@ public final class MainActivity extends Activity {
     }
     private void selectionChanged() {
         if (!busy) status.setText(selected.isEmpty() ? "Всего  " + tracks.size() : "Выбрано  " + selected.size());
+        normalizeButton.setVisibility(selected.isEmpty() ? View.GONE : View.VISIBLE);
+        normalizeButton.setEnabled(!busy);
         exportButton.setVisibility(selected.isEmpty() ? View.GONE : View.VISIBLE);
     }
     private LinearLayout.LayoutParams weight() { return new LinearLayout.LayoutParams(0, -2, 1); }
